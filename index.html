@@ -1321,6 +1321,20 @@ function parseLabNum(s){
   return isFinite(n)?n:null;
 }
 
+function extractBP(raw){
+  var flat=viAscii(raw).toLowerCase().replace(/\s+/g," ");
+  function valid(s,d){return s>=70&&s<=260&&d>=40&&d<=160&&s>d}
+  var m=flat.match(/(huyet\s*ap|h\.?\s*a\b|blood\s*pressure|\bbp\b)\D{0,25}(\d{2,3})\s*[\/\\|–—-]\s*(\d{2,3})/);
+  if(m&&valid(+m[2],+m[3]))return {sys:+m[2],dia:+m[3]};
+  var re=/(\d{2,3})\s*[\/\\|–—-]\s*(\d{2,3})/g,mm;
+  while((mm=re.exec(flat))){if(valid(+mm[1],+mm[2]))return {sys:+mm[1],dia:+mm[2]}}
+  m=flat.match(/(huyet\s*ap|h\.?\s*a\b|blood\s*pressure|\bbp\b)\D{0,30}(\d{2,3})\D{1,15}(\d{2,3})/);
+  if(m&&valid(+m[2],+m[3]))return {sys:+m[2],dia:+m[3]};
+  var sy=flat.match(/(tam\s*thu|systolic)\D{0,20}(\d{2,3})/),di=flat.match(/(tam\s*truong|diastolic)\D{0,20}(\d{2,3})/);
+  if(sy&&di&&valid(+sy[2],+di[2]))return {sys:+sy[2],dia:+di[2]};
+  return null;
+}
+
 function extractLabs(raw){
   var out={};
   raw.split(/\r?\n/).forEach(function(line){
@@ -1335,14 +1349,6 @@ function extractLabs(raw){
       }
       return null;
     }
-    if(!out.bp){
-      var rm=l.match(/(\d{2,3})\s*\/\s*(\d{2,3})/);
-      if(rm){var sys=+rm[1],dia=+rm[2];if(sys>=70&&sys<=260&&dia>=40&&dia<=160&&sys>dia)out.bp={sys:sys,dia:dia}}
-      else{
-        var sy=l.match(/(tam\s*thu|systolic)\D{0,15}(\d{2,3})/),di=l.match(/(tam\s*truong|diastolic)\D{0,15}(\d{2,3})/);
-        if(sy&&di)out.bp={sys:+sy[2],dia:+di[2]};
-      }
-    }
     if(out.egfr==null&&/egfr|\bgfr\b|mlct|do\s*loc\s*cau\s*than|loc\s*cau\s*than/.test(l)){
       var ev=pick();if(ev!=null&&ev>=0&&ev<=200)out.egfr=ev;
     }
@@ -1356,6 +1362,7 @@ function extractLabs(raw){
       }
     }
   });
+  var bp=extractBP(raw);if(bp)out.bp=bp;
   return out;
 }
 
