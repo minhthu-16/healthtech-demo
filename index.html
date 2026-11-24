@@ -625,8 +625,10 @@ details.card p{margin:10px 0 0}
   <div class="card">
     <h2>Chỉ số xét nghiệm gần nhất (tùy chọn)</h2>
     <input type="file" id="fl" accept="image/*,application/pdf" class="hide">
-    <button class="btn alt" id="scan" style="margin-top:0">📄 Tải phiếu xét nghiệm lên (tự động điền)</button>
+    <button class="btn alt" id="scan" style="margin-top:0">📷 Chụp / tải phiếu xét nghiệm (OCR)</button>
+    <p class="mute" style="font-size:12px;margin:8px 0 0">Chụp thẳng, đủ sáng, thấy rõ tên chỉ số và con số. Hệ thống đọc tự động rồi cho bạn xác nhận trước khi điền.</p>
     <div id="scanned" class="note ok hide">Kiểm tra lại số liệu.</div>
+    <div id="labreview" class="card hide"></div>
 
     <div class="two">
       <div>
@@ -761,6 +763,7 @@ details.card p{margin:10px 0 0}
 <p class="foot">HealthTech cung cấp thông tin dinh dưỡng hỗ trợ dựa trên dữ liệu bạn nhập. Không thay thế chẩn đoán hoặc phác đồ điều trị trực tiếp của bác sĩ.</p>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" onerror="window.__ocrFail=1"></script>
 <script>
 var $=function(i){return document.getElementById(i)};
 var S={sex:"",dis:{dd:0,ha:0,th:0,go:0,ml:0},custom:[],day:0};
@@ -1304,33 +1307,141 @@ $("order").onclick=function(){
   }).catch(function(){note("Không gửi được đơn hàng, vui lòng thử lại.","bad")});
 };
 
-var SHEET={nm:"NGUYỄN THỊ LAN",yr:1964,sex:"Nữ",h:155,w:58},LABBAD=false;
-function nz(t){return t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/đ/g,"d").replace(/[^a-z\s]/g,"").trim().split(/\s+/)}
-function sameName(a,b){var x=nz(a),y=nz(b);if(!x[0]||!y[0])return false;if(x[x.length-1]!==y[y.length-1])return false;return x.every(function(t){return y.indexOf(t)>=0})}
-$("fl").onchange=function(){
-  var f=this.files[0],n=$("scanned"),th=this;if(!f)return;LABBAD=false;n.className="note ok";n.textContent="Đang trích xuất chỉ số từ phiếu xét nghiệm…";
-  setTimeout(function(){
-    var er=[],wr=[],nm=$("name").value.trim(),yr=+$("year").value,h=+$("h").value,w=+$("w").value;
-    if(nm&&!sameName(nm,SHEET.nm))er.push("Họ tên: hồ sơ ghi “"+esc(nm)+"”, phiếu ghi “"+SHEET.nm+"”");
-    if(yr&&yr!==SHEET.yr)er.push("Năm sinh: hồ sơ ghi "+yr+", phiếu ghi "+SHEET.yr);
-    if(S.sex&&S.sex!==SHEET.sex)er.push("Giới tính: hồ sơ ghi "+S.sex+", phiếu ghi "+SHEET.sex);
-    if(h&&Math.abs(h-SHEET.h)>5)wr.push("chiều cao hồ sơ "+h+" cm, phiếu "+SHEET.h+" cm");
-    if(w&&Math.abs(w-SHEET.w)>5)wr.push("cân nặng hồ sơ "+w+" kg, phiếu "+SHEET.w+" kg");
-    th.value="";
-    if(er.length){
-      LABBAD=true;n.className="note bad";
-      n.innerHTML="<b>Phiếu xét nghiệm không khớp với hồ sơ</b><ul style=\"margin:6px 0;padding-left:18px\">"+er.map(function(x){return"<li>"+x+"</li>"}).join("")+"</ul>Hệ thống từ chối nhập tự động để đảm bảo an toàn lâm sàng. <button class=\"link\" id=\"fixp\">Sửa hồ sơ</button> · <button class=\"link\" id=\"newf\">Chọn phiếu khác</button>";
-      $("fixp").onclick=function(){show(1)};$("newf").onclick=function(){$("fl").click()};
-      return;
+/* ============ Phiếu xét nghiệm: OCR thật + rule trích xuất + bước xác nhận ============ */
+var OCR_BUSY=false;
+
+function viAscii(t){return String(t).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/đ/g,"d").replace(/Đ/g,"D")}
+function parseLabNum(s){
+  if(s==null)return null;
+  s=String(s).trim().replace(/[\s°]/g,"");
+  if(s.indexOf(".")>-1&&s.indexOf(",")>-1){s=s.replace(/\./g,"").replace(",",".")}
+  else if(s.indexOf(",")>-1&&s.indexOf(".")<0){s=s.replace(",",".")}
+  else{s=s.replace(/,/g,"")}
+  var n=parseFloat(s);
+  return isFinite(n)?n:null;
+}
+
+function extractLabs(raw){
+  var out={};
+  raw.split(/\r?\n/).forEach(function(line){
+    var l=viAscii(line).toLowerCase();
+    function pick(){
+      var re=/(\d{1,4}(?:[.,]\d{1,3})?)/g,m;
+      while((m=re.exec(l))){
+        if(l.charAt(m.index-1)==="/")continue;
+        var v=parseLabNum(m[1]);
+        if(v===1.73||v===1.72)continue;
+        return v;
+      }
+      return null;
     }
-    $("glu").value=132;$("unit").value="mg";$("bp").value="145/90";err("e-glu");err("e-bp");
-    if(S.dis.th){$("egfr").value=45;$("egfrbox").classList.remove("hide")}
-    n.className=wr.length?"note warn":"note ok";
-    n.textContent="✓ Đã trích xuất chỉ số từ "+f.name.slice(0,30)+". Vui lòng kiểm tra lại trước khi tiếp tục.";
-  },900);
+    if(!out.bp){
+      var rm=l.match(/(\d{2,3})\s*\/\s*(\d{2,3})/);
+      if(rm){var sys=+rm[1],dia=+rm[2];if(sys>=70&&sys<=260&&dia>=40&&dia<=160&&sys>dia)out.bp={sys:sys,dia:dia}}
+      else{
+        var sy=l.match(/(tam\s*thu|systolic)\D{0,15}(\d{2,3})/),di=l.match(/(tam\s*truong|diastolic)\D{0,15}(\d{2,3})/);
+        if(sy&&di)out.bp={sys:+sy[2],dia:+di[2]};
+      }
+    }
+    if(out.egfr==null&&/egfr|\bgfr\b|mlct|do\s*loc\s*cau\s*than|loc\s*cau\s*than/.test(l)){
+      var ev=pick();if(ev!=null&&ev>=0&&ev<=200)out.egfr=ev;
+    }
+    if(!out.glu&&/\bglucose\b|\bglu\b|\bduong\s*(?:huyet|mau|mao)\b|\bdh\b/.test(l)){
+      var gv=pick();
+      if(gv!=null&&gv>0&&gv<2000){
+        var unit=/mmol/.test(l)?"mm":(/mg\s*\/\s*dl|mg%|mg\s*\/\s*100/.test(l)?"mg":null);
+        var guess=!unit;
+        if(!unit)unit=(gv<=33&&(gv<25||gv%1!==0))?"mm":"mg";
+        out.glu={val:gv,unit:unit,guess:guess};
+      }
+    }
+  });
+  return out;
+}
+
+function extractIdentity(raw,asc){
+  var id={};
+  var nm=raw.match(/(h[oọ]\s*(?:v[aà]\s*)?t[eê]n|ho\s*ten|b[eệ]nh\s*nh[aâ]n|benh\s*nhan|patient\s*name|full\s*name)\s*[:\-]?\s*([^\n\r|]{2,40}?)(?=\s{2,}|\t|\r?\n|\d|\bnam\s*sinh\b|\bgioi\s*tinh\b|\bngay\s*sinh\b|\bdob\b|\bsex\b|\btuoi\b|$)/im);
+  if(nm)id.nm=nm[2].replace(/\s+/g," ").trim();
+  var yr=asc.match(/(?:nam\s*sinh|sinh\s*nam|ngay\s*sinh|\bdob\b|\bns\b)[^\d]{0,10}(19\d{2}|20\d{2})/i);
+  if(yr)id.yr=+yr[1];
+  var sx=asc.match(/gioi\s*tinh\s*[:\-]?\s*(female|male|nam|nu)/i);
+  if(sx)id.sex=(sx[1].toLowerCase()==="nam"||sx[1].toLowerCase()==="male")?"Nam":"Nữ";
+  return id;
+}
+
+function nameMatch(a,b){
+  var x=viAscii(a).toLowerCase().split(/\s+/).filter(Boolean),y=viAscii(b).toLowerCase().split(/\s+/).filter(Boolean);
+  if(!x.length||!y.length)return true;
+  var c=0;x.forEach(function(t){if(y.indexOf(t)>=0)c++});
+  return c>=(Math.min(x.length,y.length)>=3?Math.min(x.length,y.length)-1:1);
+}
+function labIdentityMismatch(id){
+  var nm=$("name").value.trim(),yr=+$("year").value;
+  if(id.nm&&nm&&!nameMatch(nm,id.nm))return true;
+  if(id.yr&&yr&&id.yr!==yr)return true;
+  if(id.sex&&S.sex&&id.sex!==S.sex)return true;
+  return false;
+}
+
+function applyLab(){
+  var checks=document.querySelectorAll("#labreview input[data-lf]:checked"),filled=0;
+  checks.forEach(function(c){
+    var f=c.getAttribute("data-lf"),v=c.getAttribute("data-lv"),u=c.getAttribute("data-lu");
+    if(f==="glu"){$("glu").value=v;$("unit").value=(u==="mmol/L"?"mm":"mg")}
+    else if(f==="bp"){$("bp").value=v}
+    else if(f==="egfr"){$("egfr").value=v;if(S.dis.th)$("egfrbox").classList.remove("hide")}
+    filled++;
+  });
+  var ok=true,g=parseFloat($("glu").value);
+  if($("glu").value){var mm=$("unit").value==="mm",lo=mm?1.7:30,hi=mm?33:600;ok=err("e-glu",(g>=lo&&g<=hi)?"":"Giá trị đường huyết ngoài khoảng hợp lý — kiểm tra lại")&&ok}
+  if($("bp").value){var bpm=$("bp").value.match(/^(\d{2,3})\s*\/\s*(\d{2,3})$/);ok=err("e-bp",(bpm&&+bpm[1]>+bpm[2]&&+bpm[1]<260&&+bpm[2]<160)?"":"Huyết áp không hợp lệ")&&ok}
+  var n=$("scanned");n.classList.remove("hide");
+  if(filled){n.className="note "+(ok?"ok":"warn");n.textContent="✓ Đã áp dụng "+filled+" chỉ số từ phiếu"+(ok?".":" — có chỉ số cần kiểm tra lại.")}
+  else{n.className="note warn";n.textContent="Chưa chọn chỉ số nào để áp dụng. Vui lòng nhập tay."}
+}
+
+function buildLabReview(raw,labs,id,mm){
+  var r=$("labreview"),rows="";
+  function row(field,label,value,unit,note){
+    return '<label class="chk" style="margin:9px 0"><input type="checkbox" data-lf="'+field+'" data-lv="'+esc(String(value))+'" data-lu="'+esc(unit||"")+'" checked><span>'+label+': <b>'+esc(String(value))+(unit?(" "+esc(unit)):"")+'</b>'+(note?(' <span style="color:var(--mute);font-weight:500">— '+esc(note)+'</span>'):"")+'</span></label>';
+  }
+  if(labs.glu){var g=labs.glu,uu=g.unit==="mm"?"mmol/L":"mg/dL";rows+=row("glu","Đường huyết",g.val,uu,g.guess?"chưa thấy đơn vị, hệ thống tự suy luận":"")}
+  if(labs.bp)rows+=row("bp","Huyết áp",labs.bp.sys+"/"+labs.bp.dia,"","")
+  if(labs.egfr!=null)rows+=row("egfr","eGFR",labs.egfr,"mL/phút","")
+  var idHtml="";
+  if(id.nm||id.yr||id.sex){var b=[];if(id.nm)b.push("Họ tên: "+esc(id.nm));if(id.yr)b.push("Năm sinh: "+id.yr);if(id.sex)b.push("Giới tính: "+esc(id.sex));
+    idHtml='<div class="note '+(mm?"warn":"ok")+'"><b>Thông tin nhận diện trên phiếu:</b> '+b.join(" · ")+(mm?"<br>⚠ Không khớp hoàn toàn với hồ sơ đã nhập — kiểm tra lại đúng phiếu của người bệnh.":"")+'</div>'}
+  var none=rows?"":'<div class="note warn">Không nhận diện được chỉ số nào. Hãy chụp rõ hơn (thẳng, đủ sáng, thấy rõ tên chỉ số và con số) hoặc nhập tay.</div>';
+  r.className="card";r.classList.remove("hide");
+  r.innerHTML='<h2>Kiểm tra chỉ số đọc được</h2><p class="mute" style="font-size:13px">Đọc tự động bằng OCR. Bỏ chọn chỉ số sai rồi xác nhận trước khi áp dụng.</p>'+idHtml+none+rows+(rows?'<button class="btn" id="applylab" style="margin-top:12px">Áp dụng chỉ số đã chọn</button>':'')+'<details style="margin-top:12px"><summary style="cursor:pointer;font-weight:700;color:var(--teal-dark);font-size:13px">Xem văn bản OCR thô</summary><pre style="white-space:pre-wrap;font-size:12px;color:var(--ink-2);max-height:220px;overflow:auto;background:var(--surface-soft);padding:10px;border-radius:10px;margin-top:8px">'+esc(raw)+'</pre></details>';
+  var ap=$("applylab");if(ap)ap.onclick=applyLab;
+}
+
+$("scan").onclick=function(){
+  if(typeof Tesseract==="undefined"){var n=$("scanned");n.classList.remove("hide");n.className="note warn";n.textContent="Chưa tải được bộ OCR (có thể do mạng). Vui lòng nhập tay hoặc tải lại trang.";return}
+  $("fl").click();
 };
-var g2=$("go2").onclick;
-$("go2").onclick=function(){if(LABBAD){var n=$("scanned");try{n.scrollIntoView({block:"center",behavior:"smooth"})}catch(e){}return}g2()};
+
+$("fl").onchange=function(){
+  var f=this.files[0];if(!f)return;
+  var self=this,n=$("scanned");
+  n.classList.remove("hide");n.className="note ok";
+  $("labreview").classList.add("hide");$("labreview").innerHTML="";
+  if(/pdf/i.test(f.type)||/\.pdf$/i.test(f.name)){n.className="note warn";n.textContent="Hiện chỉ đọc ảnh (JPG/PNG). Với PDF, vui lòng xuất/chụp thành ảnh rồi tải lên.";self.value="";return}
+  if(OCR_BUSY){n.className="note warn";n.textContent="Đang xử lý phiếu trước, vui lòng chờ…";return}
+  if(typeof Tesseract==="undefined"){n.className="note warn";n.textContent="Không tải được bộ OCR. Vui lòng nhập tay.";return}
+  OCR_BUSY=true;n.textContent="Đang đọc phiếu xét nghiệm… 0%";
+  Tesseract.recognize(f,"vie+eng",{logger:function(m){if(m.status==="recognizing text")n.textContent="Đang đọc phiếu xét nghiệm… "+Math.round((m.progress||0)*100)+"%"}}).then(function(res){
+    OCR_BUSY=false;self.value="";
+    var raw=(res&&res.data&&res.data.text)||"",asc=viAscii(raw).toLowerCase();
+    var labs=extractLabs(raw),id=extractIdentity(raw,asc),mm=labIdentityMismatch(id);
+    var hasLab=labs.glu||labs.bp||labs.egfr!=null;
+    n.className="note "+(hasLab?(mm?"warn":"ok"):"warn");
+    n.textContent=hasLab?("✓ Đã đọc xong phiếu"+(mm?" — có điểm không khớp hồ sơ, xem bên dưới.":". Vui lòng kiểm tra & xác nhận bên dưới.")):"Không nhận diện được chỉ số. Ảnh có thể mờ/nghiêng — thử chụp rõ hơn hoặc nhập tay.";
+    buildLabReview(raw,labs,id,mm);
+  }).catch(function(){OCR_BUSY=false;self.value="";n.className="note bad";n.textContent="Đọc phiếu thất bại. Vui lòng thử ảnh rõ hơn hoặc nhập tay."});
+};
 </script>
 </body>
 </html>
